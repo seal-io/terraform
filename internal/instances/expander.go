@@ -5,8 +5,9 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/zclconf/go-cty/cty"
+
+	"github.com/hashicorp/terraform/internal/addrs"
 )
 
 // Expander instances serve as a coordination point for gathering object
@@ -335,6 +336,13 @@ func (e *Expander) knowsResource(want addrs.AbsResource) bool {
 	return e.exps.knowsResource(want)
 }
 
+func (e *Expander) knowsResourceOfProvider(want addrs.Provider) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	return e.exps.knowsResourceOfProvider(want)
+}
+
 type expanderModule struct {
 	moduleCalls    map[addrs.ModuleCall]expansion
 	resources      map[addrs.Resource]expansion
@@ -524,4 +532,23 @@ func (m *expanderModule) knowsResource(want addrs.AbsResource) bool {
 	}
 	_, ret := modInst.resources[want.Resource]
 	return ret
+}
+
+func (m *expanderModule) knowsResourceOfProvider(want addrs.Provider) bool {
+	for _, em := range m.childInstances {
+		if em.knowsResourceOfProvider(want) {
+			return true
+		}
+	}
+
+	for r, exp := range m.resources {
+		if r.ImpliedProvider() != want.Type {
+			continue
+		}
+		if len(exp.instanceKeys()) == 0 {
+			continue
+		}
+		return true
+	}
+	return false
 }

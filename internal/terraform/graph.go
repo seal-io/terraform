@@ -5,12 +5,10 @@ import (
 	"log"
 	"strings"
 
+	"github.com/hashicorp/terraform/internal/addrs"
+	"github.com/hashicorp/terraform/internal/dag"
 	"github.com/hashicorp/terraform/internal/logging"
 	"github.com/hashicorp/terraform/internal/tfdiags"
-
-	"github.com/hashicorp/terraform/internal/addrs"
-
-	"github.com/hashicorp/terraform/internal/dag"
 )
 
 // Graph represents the graph that Terraform uses to represent resources
@@ -38,6 +36,8 @@ func (g *Graph) Walk(walker GraphWalker) tfdiags.Diagnostics {
 func (g *Graph) walk(walker GraphWalker) tfdiags.Diagnostics {
 	// The callbacks for enter/exiting a graph
 	ctx := walker.EvalContext()
+
+	napDiags := make(map[*NodeApplyableProvider]tfdiags.Diagnostics)
 
 	// Walk the graph.
 	walkFn := func(v dag.Vertex) (diags tfdiags.Diagnostics) {
@@ -74,7 +74,14 @@ func (g *Graph) walk(walker GraphWalker) tfdiags.Diagnostics {
 		if ev, ok := v.(GraphNodeExecutable); ok {
 			diags = diags.Append(walker.Execute(vertexCtx, ev))
 			if diags.HasErrors() {
-				return
+				// Skip validating provider failed result here,
+				// but confirm the failed result at final.
+				nap, ok := v.(*NodeApplyableProvider)
+				if !ok {
+					return
+				}
+				napDiags[nap] = diags
+				diags = nil
 			}
 		}
 
@@ -131,5 +138,32 @@ func (g *Graph) walk(walker GraphWalker) tfdiags.Diagnostics {
 		return
 	}
 
-	return g.AcyclicGraph.Walk(walkFn)
+	if diags := g.AcyclicGraph.Walk(walkFn); diags.HasErrors() {
+		if len(napDiags) == 0 {
+			return diags
+		}
+
+		// Merge diagnostics.
+		var mdiags tfdiags.Diagnostics
+		for k := range napDiags {
+			mdiags = mdiags.Append(napDiags[k])
+		}
+		mdiags.Append(diags)
+		return mdiags
+	}
+
+	if len(napDiags) == 0 {
+		return nil
+	}
+
+	// Figure out whether the failure provider is useless.
+	allInsts := ctx.InstanceExpander().AllInstances()
+	for nap, diags := range napDiags {
+		if !allInsts.HasResourceOfProvider(nap.Addr.Provider) {
+			continue
+		}
+		return diags
+	}
+
+	return nil
 }

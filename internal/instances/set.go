@@ -40,6 +40,12 @@ func (s Set) HasResource(want addrs.AbsResource) bool {
 	return s.exp.knowsResource(want)
 }
 
+// HasResourceOfProvider returns true if and only if the set contains the resource with
+// the given provider.
+func (s Set) HasResourceOfProvider(prodAddr addrs.Provider) bool {
+	return s.exp.knowsResourceOfProvider(prodAddr)
+}
+
 // InstancesForModule returns all of the module instances that correspond with
 // the given static module path.
 //
